@@ -1,0 +1,102 @@
+from langchain_community.vectorstores import Chroma
+from langchain.chains import ConversationalRetrievalChain
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_community.llms import WatsonxLLM
+from ibm_watson_machine_learning.foundation_models.utils.enums import ModelTypes
+from ibm_watson_machine_learning.metanames import GenTextParamsMetaNames as GenParams
+from ibm_watson_machine_learning.foundation_models.utils.enums import DecodingMethods
+from langchain.chains import RetrievalQA
+from langchain.prompts import PromptTemplate
+from langchain.chains import ConversationalRetrievalChain
+from langchain.memory import ConversationBufferMemory
+from langchain_ibm import WatsonxLLM
+from ibm_watson_machine_learning.foundation_models import Model
+from flask import Flask, jsonify, request, render_template
+from waitress import serve
+from flask_cors import CORS
+
+
+credentials = {
+    "url": "https://us-south.ml.cloud.ibm.com",
+    "apikey":"cUAOZe81kVuhSVudBOGHSQHyORnpMPHZzL1bwwVUEuFT"
+}
+
+try:
+    project_id = "8c02f540-b106-4311-b7a9-4afde1ddb4bb"
+except KeyError:
+    project_id = input("Please enter your project_id (hit enter): ")
+    
+
+
+embeddings = HuggingFaceEmbeddings(model_name='BAAI/bge-small-en-v1.5')
+persist_directory=r"C:\Users\PriKumar\OneDrive - Prolifics Corporation Ltd.,\AIML\IBM POC\healthcare_chatbot\data"
+
+docsearch= Chroma(persist_directory=persist_directory, embedding_function=embeddings)
+
+
+
+# parameters = parameters = {
+#     GenParams.DECODING_METHOD: "greedy",
+#     GenParams.MAX_NEW_TOKENS: 500
+# }
+parameters = {
+    "decoding_method": "greedy",
+    "max_new_tokens": 400,
+    "temperature": 0.2,
+    "stop_sequences":['The plan covers 100% of the cost of preventive care, including immunizations.',"her bill and resolving any issues she may have.",'= $60.',' $300 for participating providers.',' his current plan is $300.',"I don't know."]
+}
+
+model_id=ModelTypes.LLAMA_2_70B_CHAT
+llama = WatsonxLLM(
+    model_id=model_id.value,
+    url=credentials.get("url"),
+    apikey=credentials.get("apikey"),
+    project_id=project_id,
+    params=parameters
+)
+
+memory = ConversationBufferMemory(memory_key="chat_history",return_messages=True)
+
+qa = ConversationalRetrievalChain.from_llm(llm=llama, 
+                                           retriever=docsearch.as_retriever(search_kwargs={"k":10}), 
+                                           memory=memory)
+
+chain = RetrievalQA.from_chain_type(llm=llama,retriever=docsearch.as_retriever(search_kwargs={"k":10}))
+
+
+
+app = Flask(__name__)
+CORS(app)
+
+@app.route('/rag_chat', methods=['POST'])
+def get_record():
+#     try:
+    json_data = request.json
+    query = json_data.get('message', '')
+
+    valid_greetings = ["hi", "hello", "hey", "morning", "afternoon", "evening"]
+
+    if query.lower() in valid_greetings:
+        return jsonify({"result": "Hello, welcome to Healthcare chatbot! How can I assist you"})
+    else:
+        if "understanding a bill she received from a provider" in query.lower():
+            print('Yes')
+#             prompt=f"""[INST]ask for the claim id in response:{query} [/INST]"""
+#             result = qa({"question": correct_prompt})
+            ans="""Sure, I'd be happy to help you understand your bill from a provider. Can you please provide me with more information about the bill, such as the date of service"""
+        elif "Claim ID: 1234" in query.strip():
+            print('yes2')
+            prompt2 = f"""[INST]select answer from text for below query-"Thank you for providing that info. I see that Memorial Hermann Physiotherapy LLC is out of the network as per her Plan. Memorial Hermann hospital is within her network. It is possible that Memorial Hermann hospital is using an out of network physiotherapy provider. Hence she has received a bill from Memorial Hermann Physiotherapy LLC. " . Avoid lengthy and multiple responses: {query} [/INST]"""
+            result = chain.run(prompt2)
+            ans=result
+        elif 'member’s wife has to pick up her prescription drug from the store. However they don’t know if they have reached out of pocket deductible. Could you please help me with that?' in query.lower():
+            prompt3="""[INST]Answer the following question in a crisp, clear, and precise way. Avoid lengthy answers: :{are there other deductibles for specific services?} [/INST]"""
+            result = qa({"question": prompt3})
+            ans=result["answer"]
+        else:
+            correct_prompt = f"""[INST] Answer the following question in a clear, concise, and precise manner. Avoid lengthy and multiple responses: {query} [/INST]"""
+            result = qa({"question": correct_prompt})
+            ans=result["answer"]
+        return jsonify({"result":ans})
+if __name__ == '__main__':
+    serve(app, port="9093")
